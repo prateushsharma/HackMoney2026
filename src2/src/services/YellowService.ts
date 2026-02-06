@@ -1,5 +1,8 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import dotenv from 'dotenv';
+dotenv.config(); // Load .env
+
 import {
   createAuthRequestMessage,
   createEIP712AuthMessageSigner,
@@ -8,8 +11,6 @@ import {
   createAppSessionMessage,
   createCloseAppSessionMessage,
   createGetLedgerBalancesMessage,
-  parseRPCResponse,
-  RPCMethod,
   MessageSigner,
 } from '@erc7824/nitrolite';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -53,6 +54,24 @@ export class YellowService extends EventEmitter {
   
   private constructor() {
     super();
+    
+    // Validate private key on construction
+    if (!process.env.MAIN_PRIVATE_KEY) {
+      throw new Error(
+        '\n❌ MAIN_PRIVATE_KEY not found in .env file!\n' +
+        'Please:\n' +
+        '1. Copy .env.example to .env\n' +
+        '2. Add your Sepolia testnet private key\n' +
+        '3. Run npm run demo again\n'
+      );
+    }
+    
+    if (!process.env.MAIN_PRIVATE_KEY.startsWith('0x')) {
+      throw new Error(
+        '\n❌ MAIN_PRIVATE_KEY must start with 0x\n' +
+        'Example: MAIN_PRIVATE_KEY=0x1234567890abcdef...\n'
+      );
+    }
   }
   
   static getInstance(): YellowService {
@@ -120,10 +139,11 @@ export class YellowService extends EventEmitter {
       
       const handleAuth = async (data: Buffer) => {
         try {
-          const response = parseRPCResponse(data.toString());
+          const response = JSON.parse(data.toString());
+          const method = response.res?.[1];
           
-          if (response.method === RPCMethod.AuthChallenge) {
-            const challenge = response.params.challenge_message;
+          if (method === 'auth_challenge') {
+            const challenge = response.res?.[2]?.challenge_message;
             const eip712Signer = createEIP712AuthMessageSigner(
               walletClient,
               authParams,
@@ -133,8 +153,8 @@ export class YellowService extends EventEmitter {
             this.send(verifyMsg);
           }
           
-          if (response.method === RPCMethod.AuthVerify) {
-            if (response.params.success) {
+          if (method === 'auth_verify') {
+            if (response.res?.[2]?.success) {
               this.isAuth = true;
               this.ws?.removeListener('message', handleAuth);
               clearTimeout(timeout);
@@ -155,32 +175,37 @@ export class YellowService extends EventEmitter {
   
   private handleMessage(data: Buffer): void {
     try {
-      const response = parseRPCResponse(data.toString());
+      const response = JSON.parse(data.toString());
+      
+      // Extract method and params from Yellow response format
+      // Response: { res: [id, method, params, timestamp], sig: [...] }
+      const method = response.res?.[1];
+      const params = response.res?.[2]?.[0] || response.res?.[2];
       
       // Filter background messages
-      if (response.method === 'assets' || response.method === 'bu') return;
+      if (method === 'assets' || method === 'bu') return;
       
       // Emit for listeners
-      this.emit('message', response);
-      this.emit(response.method, response.params);
+      this.emit('message', { method, params });
+      this.emit(method, params);
       
       // Handle app session updates
-      if (response.method === 'create_app_session' && response.params.app_session_id) {
-        this.activeSessions.set(response.params.app_session_id, response.params);
+      if (method === 'create_app_session' && params?.app_session_id) {
+        this.activeSessions.set(params.app_session_id, params);
       }
       
-      if (response.method === 'submit_app_state' && response.params.app_session_id) {
-        const existing = this.activeSessions.get(response.params.app_session_id);
+      if (method === 'submit_app_state' && params?.app_session_id) {
+        const existing = this.activeSessions.get(params.app_session_id);
         if (existing) {
-          this.activeSessions.set(response.params.app_session_id, {
+          this.activeSessions.set(params.app_session_id, {
             ...existing,
-            ...response.params
+            ...params
           });
         }
       }
       
-      if (response.method === 'close_app_session' && response.params.app_session_id) {
-        const sessionId = response.params.app_session_id;
+      if (method === 'close_app_session' && params?.app_session_id) {
+        const sessionId = params.app_session_id;
         this.activeSessions.delete(sessionId);
       }
     } catch (error) {
@@ -198,9 +223,9 @@ export class YellowService extends EventEmitter {
       throw new Error('Not authenticated with Yellow');
     }
     
-    // IMPORTANT: Protocol must be NitroRPC/0.4 for intent support
-    if (definition.protocol !== 'NitroRPC/0.4') {
-      console.warn('⚠️  Use NitroRPC/0.4 for new sessions (supports OPERATE/DEPOSIT/WITHDRAW intents)');
+    // IMPORTANT: Protocol must be 'nitroliterpc' for intent support
+    if (definition.protocol !== 'nitroliterpc') {
+      console.warn('⚠️  Protocol should be "nitroliterpc" for app sessions');
     }
     
     return new Promise((resolve, reject) => {

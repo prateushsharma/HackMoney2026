@@ -58,9 +58,9 @@ export class SwapOrchestrator extends EventEmitter {
       
       console.log(`Creating Yellow session for ${participants.length} participants`);
       
-      // Define app session (MUST use NitroRPC/0.4!)
+      // Define app session (MUST use nitroliterpc!)
       const definition = {
-        protocol: 'NitroRPC/0.4', // ✅ Correct protocol version
+        protocol: 'nitroliterpc', // ✅ Correct protocol
         participants,
         weights: this.calculateWeights(participants),
         quorum: 100, // All must approve

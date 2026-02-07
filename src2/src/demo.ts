@@ -69,9 +69,8 @@ async function runYellowDemo() {
   console.log('Creating multi-party session with:');
   console.log(`   • Seller: Alice`);
   console.log(`   • Provider: Market Maker`);
-  console.log(`   • Buyers: Bob, Carol, Dave`);
-  console.log(`   • Total: 5 participants`);
-  console.log(`   • Protocol: nitroliterpc ✓`);
+  console.log(`   • Total: 2 participants (testing)`);
+  console.log(`   • Protocol: NitroRPC/0.5 ✓`);
   console.log(`   • Governance: Quorum = 100%`);
   
   const yellowSessionId = await orchestrator.createSwapSession(plan);

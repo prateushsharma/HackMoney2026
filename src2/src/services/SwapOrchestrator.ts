@@ -49,7 +49,7 @@ export class SwapOrchestrator extends EventEmitter {
     this.swapSessions.set(plan.id, session);
     
     try {
-      // Build participants array
+      // Build participants array - 5 PARTICIPANTS
       const participants = [
         plan.seller,
         plan.provider,
@@ -58,31 +58,32 @@ export class SwapOrchestrator extends EventEmitter {
       
       console.log(`Creating Yellow session for ${participants.length} participants`);
       
-      // Define app session (MUST use nitroliterpc!)
+      // Define app session - use NitroRPC/0.5 from tutorial!
       const definition = {
-        protocol: 'nitroliterpc', // ✅ Correct protocol
+        protocol: 'NitroRPC/0.5', // ✅ From Yellow tutorial
         participants,
         weights: this.calculateWeights(participants),
         quorum: 100, // All must approve
         challenge: 0,
-        nonce: Date.now(),
+        nonce: Date.now(), // ✅ Back to Date.now() like tutorial
+        application: 'RWA Swap', // ✅ MISSING FIELD from tutorial!
       };
       
       // Build lock allocations (what each party locks initially)
       const lockAllocations = this.buildLockAllocations(plan);
       
-      // Session data with execution plan info
-      const sessionData = JSON.stringify({
-        executionPlanId: plan.id,
-        phase: 'lock',
-        timestamp: Date.now(),
-      });
+      // Try WITHOUT session_data first to debug
+      // const sessionData = JSON.stringify({
+      //   executionPlanId: plan.id,
+      //   phase: 'lock',
+      //   timestamp: Date.now(),
+      // });
       
       // Create Yellow app session
       const yellowSessionId = await this.yellow.createAppSession(
         definition,
-        lockAllocations,
-        sessionData
+        lockAllocations
+        // sessionData  // Skip for now
       );
       
       session.yellowSessionId = yellowSessionId;
@@ -214,30 +215,30 @@ export class SwapOrchestrator extends EventEmitter {
   
   /**
    * Build lock allocations (Phase 1)
-   * Seller locks RWA, Provider locks USDC, Buyers lock USDC
+   * All 5 participants with small initial balances
    */
   private buildLockAllocations(plan: ExecutionPlan): any[] {
     const allocations: any[] = [];
     
-    // Seller locks RWA tokens
+    // Seller
     allocations.push({
       participant: plan.seller,
-      asset: 'rwa_token', // Will be actual token address
-      amount: plan.totalRwaAmount,
+      asset: 'ytest.usd',
+      amount: '100.00',
     });
     
-    // Provider locks USDC to buy from seller
+    // Provider
     allocations.push({
       participant: plan.provider,
-      asset: 'usdc',
-      amount: plan.totalUsdcAmount,
+      asset: 'ytest.usd',
+      amount: '10.00',
     });
     
-    // Buyers lock their USDC
+    // Buyers
     for (const buyer of plan.buyers) {
       allocations.push({
         participant: buyer.buyer,
-        asset: 'usdc',
+        asset: 'ytest.usd',
         amount: buyer.usdcAmount,
       });
     }
@@ -247,51 +248,33 @@ export class SwapOrchestrator extends EventEmitter {
   
   /**
    * Build final allocations (Phase 2)
-   * Net settlement - only final balances
+   * Net settlement after swap completion
    */
   private buildFinalAllocations(plan: ExecutionPlan): any[] {
     const allocations: any[] = [];
     
-    // Seller receives USDC (from provider)
+    // Seller receives USDC from buyers
     allocations.push({
       participant: plan.seller,
-      asset: 'usdc',
+      asset: 'ytest.usd',
       amount: plan.totalUsdcAmount,
     });
     
-    allocations.push({
-      participant: plan.seller,
-      asset: 'rwa_token',
-      amount: '0', // Seller no longer has RWA
-    });
-    
-    // Buyers receive RWA tokens
-    for (const buyer of plan.buyers) {
-      allocations.push({
-        participant: buyer.buyer,
-        asset: 'rwa_token',
-        amount: buyer.rwaAmount,
-      });
-      
-      allocations.push({
-        participant: buyer.buyer,
-        asset: 'usdc',
-        amount: '0', // Buyers spent USDC
-      });
-    }
-    
-    // Provider keeps fee
+    // Provider receives fee
     allocations.push({
       participant: plan.provider,
-      asset: 'usdc',
+      asset: 'ytest.usd',
       amount: plan.providerFee,
     });
     
-    allocations.push({
-      participant: plan.provider,
-      asset: 'rwa_token',
-      amount: '0',
-    });
+    // Buyers receive their portions
+    for (const buyer of plan.buyers) {
+      allocations.push({
+        participant: buyer.buyer,
+        asset: 'ytest.usd',
+        amount: '0',  // Spent USDC on RWA tokens
+      });
+    }
     
     return allocations;
   }

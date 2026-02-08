@@ -1,15 +1,16 @@
-import { EventEmitter } from 'events';
 import { YellowService } from './YellowService';
+
+export interface Buyer {
+  buyer: string;
+  rwaAmount: string;
+  usdcAmount: string;
+}
 
 export interface ExecutionPlan {
   id: string;
   seller: string;
   provider: string;
-  buyers: Array<{
-    buyer: string;
-    rwaAmount: string;
-    usdcAmount: string;
-  }>;
+  buyers: Buyer[];
   rwaToken: string;
   totalRwaAmount: string;
   totalUsdcAmount: string;
@@ -17,37 +18,24 @@ export interface ExecutionPlan {
   timestamp: number;
 }
 
-export interface SwapSession {
-  executionPlanId: string;
-  yellowSessionId: string | null;
-  status: 'pending' | 'created' | 'locked' | 'finalized' | 'closed' | 'failed';
-  currentVersion: number;
-  error?: string;
-}
-
-export class SwapOrchestrator extends EventEmitter {
+export class SwapOrchestrator {
   private yellow: YellowService;
-  private swapSessions: Map<string, SwapSession> = new Map();
-  
+  private executionPlans: Map<string, ExecutionPlan> = new Map();
+  private yellowSessions: Map<string, string> = new Map(); // planId -> yellowSessionId
+
   constructor() {
-    super();
     this.yellow = YellowService.getInstance();
   }
-  
+
   /**
-   * Phase 1: Create Yellow app session with lock allocations
-   * Uses NitroRPC/0.4 protocol
+   * Create multi-party swap session
    */
   async createSwapSession(plan: ExecutionPlan): Promise<string> {
-    const session: SwapSession = {
-      executionPlanId: plan.id,
-      yellowSessionId: null,
-      status: 'pending',
-      currentVersion: 1,
-    };
-    
-    this.swapSessions.set(plan.id, session);
-    
+    // Store the plan FIRST - this was the bug!
+    this.executionPlans.set(plan.id, plan);
+    console.log(`📝 Stored execution plan: ${plan.id}`);
+    console.log(`   Plans in memory: ${this.executionPlans.size}`);
+
     try {
       // Build participants array - 5 PARTICIPANTS
       const participants = [
@@ -57,162 +45,118 @@ export class SwapOrchestrator extends EventEmitter {
       ];
       
       console.log(`Creating Yellow session for ${participants.length} participants`);
-      
-      // Define app session - use NitroRPC/0.5 from tutorial!
-      const definition = {
-        protocol: 'NitroRPC/0.5', // ✅ From Yellow tutorial
-        participants,
-        weights: this.calculateWeights(participants),
-        quorum: 100, // All must approve
+
+      // Build app definition for multi-party swap
+      const appDefinition = {
+        protocol: 'NitroRPC/0.5',
+        participants: participants,
+        weights: [20, 20, 20, 20, 20], // Equal weights for all 5 participants
+        quorum: 100,
         challenge: 0,
-        nonce: Date.now(), // ✅ Back to Date.now() like tutorial
-        application: 'RWA Swap', // ✅ MISSING FIELD from tutorial!
+        nonce: Date.now(),
+        application: 'RWA Swap'
       };
-      
-      // Build lock allocations (what each party locks initially)
-      const lockAllocations = this.buildLockAllocations(plan);
-      
-      // Try WITHOUT session_data first to debug
-      // const sessionData = JSON.stringify({
-      //   executionPlanId: plan.id,
-      //   phase: 'lock',
-      //   timestamp: Date.now(),
-      // });
-      
-      // Create Yellow app session
+
+      // Build initial allocations
+      const allocations = this.buildLockAllocations(plan);
+
+      // Create Yellow session
       const yellowSessionId = await this.yellow.createAppSession(
-        definition,
-        lockAllocations
-        // sessionData  // Skip for now
+        appDefinition,
+        allocations
       );
-      
-      session.yellowSessionId = yellowSessionId;
-      session.status = 'created';
-      
+
+      // Store the mapping
+      this.yellowSessions.set(plan.id, yellowSessionId);
       console.log(`✅ Yellow session created: ${yellowSessionId}`);
-      this.emit('session_created', { executionPlanId: plan.id, yellowSessionId });
       
       return yellowSessionId;
     } catch (error) {
-      session.status = 'failed';
-      session.error = error instanceof Error ? error.message : 'Unknown error';
-      this.emit('session_failed', { executionPlanId: plan.id, error });
+      console.error('Failed to create swap session:', error);
+      // Clean up on failure
+      this.executionPlans.delete(plan.id);
       throw error;
     }
   }
-  
+
   /**
-   * Phase 1.5: Lock funds (optional explicit lock step)
-   * Uses OPERATE intent to redistribute within locked amounts
+   * Lock funds (Phase 1 - Locking)
    */
-  async lockFunds(executionPlanId: string): Promise<void> {
-    const session = this.swapSessions.get(executionPlanId);
-    if (!session || !session.yellowSessionId) {
-      throw new Error('Session not found');
+  async lockFunds(planId: string): Promise<void> {
+    console.log(`🔍 Looking up plan: ${planId}`);
+    console.log(`   Plans available: ${Array.from(this.executionPlans.keys()).join(', ')}`);
+    
+    const plan = this.executionPlans.get(planId);
+    const yellowSessionId = this.yellowSessions.get(planId);
+
+    if (!plan) {
+      throw new Error(`Execution plan not found: ${planId}`);
     }
     
-    const plan = this.getExecutionPlan(executionPlanId);
-    
-    try {
-      // Confirm lock state using OPERATE intent (no change to totals)
-      const lockAllocations = this.buildLockAllocations(plan);
-      
-      await this.yellow.submitAppState(
-        session.yellowSessionId,
-        'operate', // OPERATE intent - redistribute within locked amounts
-        session.currentVersion + 1,
-        lockAllocations,
-        JSON.stringify({ phase: 'locked', timestamp: Date.now() })
-      );
-      
-      session.currentVersion++;
-      session.status = 'locked';
-      
-      console.log(`✅ Funds locked in session ${session.yellowSessionId}`);
-      this.emit('funds_locked', { executionPlanId });
-    } catch (error) {
-      session.status = 'failed';
-      session.error = error instanceof Error ? error.message : 'Unknown error';
-      throw error;
+    if (!yellowSessionId) {
+      throw new Error(`Yellow session not found for plan: ${planId}`);
     }
+
+    const allocations = this.buildLockAllocations(plan);
+
+    await this.yellow.submitAppState(
+      yellowSessionId,
+      'OPERATE',
+      allocations
+    );
   }
-  
+
   /**
-   * Phase 2: Finalize swap with net settlement
-   * Uses OPERATE intent to redistribute to final state
+   * Finalize swap (Phase 2 - Settlement)
    */
-  async finalizeSwap(executionPlanId: string): Promise<void> {
-    const session = this.swapSessions.get(executionPlanId);
-    if (!session || !session.yellowSessionId) {
-      throw new Error('Session not found');
+  async finalizeSwap(planId: string): Promise<void> {
+    const plan = this.executionPlans.get(planId);
+    const yellowSessionId = this.yellowSessions.get(planId);
+
+    if (!plan) {
+      throw new Error(`Execution plan not found: ${planId}`);
     }
     
-    const plan = this.getExecutionPlan(executionPlanId);
-    
-    try {
-      // Build final allocations (net settlement)
-      const finalAllocations = this.buildFinalAllocations(plan);
-      
-      // Update state with OPERATE intent (redistribute to final)
-      await this.yellow.submitAppState(
-        session.yellowSessionId,
-        'operate', // OPERATE - final redistribution
-        session.currentVersion + 1,
-        finalAllocations,
-        JSON.stringify({ 
-          phase: 'finalized', 
-          result: 'swap_completed',
-          timestamp: Date.now() 
-        })
-      );
-      
-      session.currentVersion++;
-      session.status = 'finalized';
-      
-      console.log(`✅ Swap finalized in session ${session.yellowSessionId}`);
-      this.emit('swap_finalized', { executionPlanId, yellowSessionId: session.yellowSessionId });
-    } catch (error) {
-      session.status = 'failed';
-      session.error = error instanceof Error ? error.message : 'Unknown error';
-      throw error;
+    if (!yellowSessionId) {
+      throw new Error(`Yellow session not found for plan: ${planId}`);
     }
+
+    const allocations = this.buildFinalAllocations(plan);
+
+    await this.yellow.submitAppState(
+      yellowSessionId,
+      'OPERATE',
+      allocations
+    );
+
+    console.log(`✅ Swap finalized for plan ${planId}`);
   }
-  
+
   /**
-   * Phase 3: Close Yellow session and distribute funds
+   * Close swap session
    */
-  async closeSession(executionPlanId: string): Promise<void> {
-    const session = this.swapSessions.get(executionPlanId);
-    if (!session || !session.yellowSessionId) {
-      throw new Error('Session not found');
+  async closeSwapSession(planId: string): Promise<void> {
+    const plan = this.executionPlans.get(planId);
+    const yellowSessionId = this.yellowSessions.get(planId);
+
+    if (!plan) {
+      throw new Error(`Execution plan not found: ${planId}`);
     }
     
-    const plan = this.getExecutionPlan(executionPlanId);
-    
-    try {
-      const finalAllocations = this.buildFinalAllocations(plan);
-      
-      await this.yellow.closeAppSession(
-        session.yellowSessionId,
-        finalAllocations,
-        JSON.stringify({ 
-          result: 'swap_completed',
-          executionPlanId: plan.id,
-          timestamp: Date.now() 
-        })
-      );
-      
-      session.status = 'closed';
-      
-      console.log(`✅ Session closed: ${session.yellowSessionId}`);
-      this.emit('session_closed', { executionPlanId });
-    } catch (error) {
-      session.status = 'failed';
-      session.error = error instanceof Error ? error.message : 'Unknown error';
-      throw error;
+    if (!yellowSessionId) {
+      throw new Error(`Yellow session not found for plan: ${planId}`);
     }
+
+    const allocations = this.buildFinalAllocations(plan);
+
+    await this.yellow.closeAppSession(
+      yellowSessionId,
+      allocations
+    );
+
+    console.log(`✅ Swap session closed for plan ${planId}`);
   }
-  
+
   /**
    * Build lock allocations (Phase 1)
    * All 5 participants with small initial balances
@@ -245,7 +189,7 @@ export class SwapOrchestrator extends EventEmitter {
     
     return allocations;
   }
-  
+
   /**
    * Build final allocations (Phase 2)
    * Net settlement after swap completion
@@ -278,30 +222,12 @@ export class SwapOrchestrator extends EventEmitter {
     
     return allocations;
   }
-  
-  /**
-   * Calculate weights for participants
-   * For demo: equal weights for simplicity
-   */
-  private calculateWeights(participants: string[]): number[] {
-    const weight = Math.floor(100 / participants.length);
-    return participants.map((_, i) => 
-      i === 0 ? 100 - (weight * (participants.length - 1)) : weight
-    );
+
+  getExecutionPlan(id: string): ExecutionPlan | undefined {
+    return this.executionPlans.get(id);
   }
-  
-  getSwapSession(executionPlanId: string): SwapSession | undefined {
-    return this.swapSessions.get(executionPlanId);
-  }
-  
-  getAllSwapSessions(): SwapSession[] {
-    return Array.from(this.swapSessions.values());
-  }
-  
-  // Mock execution plan storage (replace with DB)
-  private getExecutionPlan(id: string): ExecutionPlan {
-    // This would come from your database
-    // For now, return a mock
-    throw new Error('Implement execution plan storage');
+
+  getAllPlans(): ExecutionPlan[] {
+    return Array.from(this.executionPlans.values());
   }
 }

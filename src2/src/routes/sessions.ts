@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import { SwapOrchestrator } from '../services/SwapOrchestrator';
+import { Router, Request, Response } from 'express';
+import { SwapOrchestrator, ExecutionPlan } from '../services/SwapOrchestrator';
 import { YellowService } from '../services/YellowService';
 
 const router = Router();
@@ -7,174 +7,238 @@ const orchestrator = new SwapOrchestrator();
 
 /**
  * POST /api/sessions/create
- * Create a multi-party swap session using Yellow
+ * Create a new multi-party RWA swap session
  */
-router.post('/create', async (req, res) => {
+router.post('/create', async (req: Request, res: Response) => {
   try {
-    const { executionPlan } = req.body;
+    console.log('\n🔷 Received create session request');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
-    if (!executionPlan) {
-      return res.status(400).json({ error: 'executionPlan required' });
+    const { seller, provider, buyers, rwaToken, totalRwaAmount, totalUsdcAmount, providerFee } = req.body;
+
+    // Validate input
+    if (!seller || !provider || !buyers || buyers.length === 0) {
+      console.log('❌ Validation failed - missing fields');
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields' 
+      });
     }
+
+    // Create execution plan
+    const plan: ExecutionPlan = {
+      id: `exec_${Date.now()}`,
+      seller,
+      provider,
+      buyers,
+      rwaToken,
+      totalRwaAmount,
+      totalUsdcAmount,
+      providerFee,
+      timestamp: Date.now()
+    };
+
+    console.log(`✅ Creating swap session for ${buyers.length + 2} participants`);
     
-    console.log(`Creating swap session for plan ${executionPlan.id}`);
-    
-    const yellowSessionId = await orchestrator.createSwapSession(executionPlan);
-    
-    res.json({
+    // Create Yellow session
+    const yellowSessionId = await orchestrator.createSwapSession(plan);
+
+    const response = {
       success: true,
+      planId: plan.id,
       yellowSessionId,
-      executionPlanId: executionPlan.id,
-      message: 'Yellow app session created with NitroRPC/0.4',
-    });
+      participants: [seller, provider, ...buyers.map((b: any) => b.buyer)],
+      status: 'created'
+    };
+
+    console.log('✅ Session created successfully:', response);
+    
+    res.json(response);
+
   } catch (error) {
-    console.error('Error creating session:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error creating session:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to create session',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
- * POST /api/sessions/:executionPlanId/lock
- * Lock funds in the session (optional explicit step)
+ * POST /api/sessions/:planId/lock
+ * Lock funds for a swap session
  */
-router.post('/:executionPlanId/lock', async (req, res) => {
+router.post('/:planId/lock', async (req: Request, res: Response) => {
   try {
-    const { executionPlanId } = req.params;
+    const { planId } = req.params;
+
+    console.log(`\n🔒 Locking funds for plan: ${planId}`);
     
-    await orchestrator.lockFunds(executionPlanId);
-    
+    await orchestrator.lockFunds(planId);
+
     res.json({
       success: true,
-      message: 'Funds locked using OPERATE intent',
+      planId,
+      status: 'locked'
     });
+
   } catch (error) {
-    console.error('Error locking funds:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error locking funds:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to lock funds',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
- * POST /api/sessions/:executionPlanId/finalize
- * Finalize swap with net settlement
+ * POST /api/sessions/:planId/finalize
+ * Finalize a swap session
  */
-router.post('/:executionPlanId/finalize', async (req, res) => {
+router.post('/:planId/finalize', async (req: Request, res: Response) => {
   try {
-    const { executionPlanId } = req.params;
+    const { planId } = req.params;
+
+    console.log(`\n✅ Finalizing swap for plan: ${planId}`);
     
-    await orchestrator.finalizeSwap(executionPlanId);
-    
+    await orchestrator.finalizeSwap(planId);
+
     res.json({
       success: true,
-      message: 'Swap finalized with net settlement (OPERATE intent)',
+      planId,
+      status: 'finalized'
     });
+
   } catch (error) {
-    console.error('Error finalizing swap:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error finalizing swap:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to finalize swap',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
- * POST /api/sessions/:executionPlanId/close
- * Close Yellow session and distribute funds
+ * POST /api/sessions/:planId/close
+ * Close a swap session
  */
-router.post('/:executionPlanId/close', async (req, res) => {
+router.post('/:planId/close', async (req: Request, res: Response) => {
   try {
-    const { executionPlanId } = req.params;
+    const { planId } = req.params;
+
+    console.log(`\n🔒 Closing session for plan: ${planId}`);
     
-    await orchestrator.closeSession(executionPlanId);
-    
+    await orchestrator.closeSwapSession(planId);
+
     res.json({
       success: true,
-      message: 'Yellow session closed, funds distributed',
+      planId,
+      status: 'closed'
     });
+
   } catch (error) {
-    console.error('Error closing session:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error closing session:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to close session',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
- * GET /api/sessions/:executionPlanId
- * Get session status
+ * GET /api/sessions/:planId
+ * Get execution plan details
  */
-router.get('/:executionPlanId', (req, res) => {
+router.get('/:planId', async (req: Request, res: Response) => {
   try {
-    const { executionPlanId } = req.params;
-    const session = orchestrator.getSwapSession(executionPlanId);
-    
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
+    const { planId } = req.params;
+    const plan = orchestrator.getExecutionPlan(planId);
+
+    if (!plan) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Plan not found' 
+      });
     }
-    
-    res.json(session);
-  } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
 
-/**
- * GET /api/sessions
- * Get all active sessions
- */
-router.get('/', (req, res) => {
-  try {
-    const sessions = orchestrator.getAllSwapSessions();
-    res.json({ sessions });
+    res.json({
+      success: true,
+      plan
+    });
+
   } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error getting plan:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get plan',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
  * GET /api/sessions/yellow/active
- * Get active Yellow app sessions
+ * Get all active Yellow sessions
  */
-router.get('/yellow/active', (req, res) => {
+router.get('/yellow/active', async (req: Request, res: Response) => {
   try {
-    const yellow = YellowService.getInstance();
-    const sessions = yellow.getAllActiveSessions();
+    console.log('\n📊 Fetching active Yellow sessions');
     
-    res.json({ 
-      count: sessions.length,
-      sessions 
+    const yellowService = YellowService.getInstance();
+    const activeSessions = yellowService.getActiveSessions();
+
+    const sessions = Array.from(activeSessions.values()).map(session => ({
+      id: session.app_session_id.slice(0, 20) + '...',
+      yellowSessionId: session.app_session_id,
+      status: session.status,
+      participants: session.participants.length,
+      protocol: session.protocol,
+      version: session.version,
+      created_at: session.created_at
+    }));
+
+    console.log(`✅ Found ${sessions.length} active sessions`);
+
+    res.json({
+      success: true,
+      sessions,
+      count: sessions.length
     });
+
   } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error getting active sessions:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get active sessions',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
 
 /**
- * GET /api/sessions/yellow/:sessionId
- * Get specific Yellow app session
+ * GET /api/sessions
+ * Get all execution plans
  */
-router.get('/yellow/:sessionId', (req, res) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const { sessionId } = req.params;
-    const yellow = YellowService.getInstance();
-    const session = yellow.getActiveSession(sessionId);
-    
-    if (!session) {
-      return res.status(404).json({ error: 'Yellow session not found' });
-    }
-    
-    res.json(session);
+    const plans = orchestrator.getAllPlans();
+
+    res.json({
+      success: true,
+      plans,
+      count: plans.length
+    });
+
   } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Unknown error',
+    console.error('❌ Error getting plans:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to get plans',
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });

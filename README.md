@@ -6,7 +6,7 @@
 [![State Channels](https://img.shields.io/badge/Technology-State%20Channels-9333EA?style=for-the-badge)](https://erc7824.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-ZaZa-RWA is a decentralized liquidity protocol that solves the **$25 billion RWA illiquidity crisis** using Yellow Network's multi-party state channels. We enable instant, gas-efficient atomic swaps for tokenized real estate, treasuries, and commodities that previously traded only once per year.
+ZaZa-RWA is a decentralized high frequency liquidity protocol that solves the **$25 billion RWA illiquidity crisis** using Yellow Network's multi-party state channels. We enable instant, gas-efficient atomic swaps for tokenized real estate, treasuries, and commodities that previously traded only once per year.
 
 ---
 
